@@ -41,8 +41,9 @@ void main() {
         syncCase((rig, timers) async {
       rig.app.debugArmOwnedTimers();
       expect(timers.activePeriodic(kBackfillEvery), hasLength(1));
-      expect(timers.activeOneShot(const Duration(minutes: 5)), hasLength(1),
-          reason: 'the alarm grace timer (alarm-owned, not sync)');
+      expect(timers.activeOneShot(const Duration(minutes: 5)), hasLength(2),
+          reason: 'the alarm grace timer (alarm-owned, not sync) and the '
+              'scheduled-backup timer');
       rig.app.dispose();
       expect(timers.activePeriodic(kBackfillEvery), isEmpty);
       expect(timers.activeOneShot(const Duration(minutes: 5)), isEmpty);
