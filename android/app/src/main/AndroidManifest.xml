@@ -60,6 +60,9 @@
     <uses-permission android:name="android.permission.REQUEST_IGNORE_BATTERY_OPTIMIZATIONS" />
     <!-- Keep the CPU alive while the boot receiver starts the foreground service. -->
     <uses-permission android:name="android.permission.WAKE_LOCK" />
+    <!-- Scheduled backups at the user's chosen time (BackupAlarm.kt). User-granted
+         on Android 14+; without it the alarm falls back to allow-while-idle. -->
+    <uses-permission android:name="android.permission.SCHEDULE_EXACT_ALARM" />
     <!-- OTA self-update: download + launch the system installer for the new APK. -->
     <uses-permission android:name="android.permission.REQUEST_INSTALL_PACKAGES" />
     <!-- QUERY_ALL_PACKAGES: declared for a notification-relay app picker that was
@@ -236,6 +239,11 @@
              secret shown in Settings -> Automation, plus a short rate limit;
              anything else is silently dropped. Optional int extra "pattern"
              (default 2). -->
+        <!-- Scheduled backup alarm. Only our own PendingIntent targets it. -->
+        <receiver
+            android:name=".BackupAlarmReceiver"
+            android:exported="false" />
+
         <receiver
             android:name=".TaskerReceiver"
             android:exported="true"

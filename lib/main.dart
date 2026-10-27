@@ -7,6 +7,7 @@ import 'telemetry/telemetry_service.dart';
 import 'ble/ios_ble_restore.dart';
 import 'notify/notification_service.dart';
 import 'coach/coach_config.dart';
+import 'data/backup_alarm.dart';
 import 'state/app_state.dart';
 import 'state/prefs.dart';
 import 'state/clock_format.dart';
@@ -127,6 +128,9 @@ Future<void> main() async {
   // Android: headless auto-connect after reboot (no-op if a view is attached or iOS).
   await _safeInit('HeadlessBoot', maybeHeadlessBoot);
   await _safeInit('WidgetService', WidgetService.init);
+  // Scheduled-backup alarm channel; runs a backup an alarm left pending while
+  // no Dart was running.
+  await _safeInit('BackupAlarm', BackupAlarm.init);
   await _safeInit('NotificationService', NotificationService.instance.init);
   // note: BackgroundDerivation.init() (compute/background_derivation.dart,
   // Android WorkManager periodic heavy-derive/sync) is intentionally NOT

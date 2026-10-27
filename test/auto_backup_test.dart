@@ -269,6 +269,59 @@ void main() {
     });
   });
 
+  group('nextBackupWake', () {
+    final now = DateTime(2026, 8, 9, 12);
+
+    test('a due backup waits a minute, not zero', () {
+      expect(
+        nextBackupWake(
+          cadence: BackupCadence.daily,
+          lastRun: null,
+          now: now,
+          lastFailed: false,
+        ),
+        now.add(const Duration(minutes: 1)),
+      );
+    });
+
+    test('after a failure it waits an hour, not a tight retry loop', () {
+      expect(
+        nextBackupWake(
+          cadence: BackupCadence.daily,
+          lastRun: null,
+          now: now,
+          lastFailed: true,
+        ),
+        now.add(const Duration(hours: 1)),
+      );
+    });
+
+    test('a later due time is left as it is', () {
+      expect(
+        nextBackupWake(
+          cadence: BackupCadence.daily,
+          lastRun: DateTime(2026, 8, 9, 3),
+          now: now,
+          atMinute: 180,
+          lastFailed: true,
+        ),
+        DateTime(2026, 8, 10, 3),
+      );
+    });
+
+    test('off has nothing to wake for', () {
+      expect(
+        nextBackupWake(
+          cadence: BackupCadence.off,
+          lastRun: null,
+          now: now,
+          lastFailed: false,
+        ),
+        isNull,
+      );
+    });
+  });
+
   group('BackupCadence', () {
     test('an unknown stored name falls back to off, not to backing up', () {
       // A pref written by a newer build must not silently start writing

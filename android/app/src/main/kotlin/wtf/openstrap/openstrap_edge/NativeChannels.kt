@@ -65,6 +65,7 @@ object NativeChannels {
         val app = context.applicationContext
 
         BackupFolderBridge.register(engine, app)
+        BackupAlarmBridge.register(engine, app)
         HealthConnectSleepWriter.register(engine, app)
         HealthConnectHeartRateWriter.register(engine, app)
         // The phone's own step counter. Registered here (from EdgeApplication.ensureEngine,

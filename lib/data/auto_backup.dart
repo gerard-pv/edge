@@ -192,6 +192,81 @@ DateTime? nextBackupAt({
   return null;
 }
 
+/// When to next wake up and check, or null when nothing is scheduled.
+///
+/// [nextBackupAt] with a floor: a backup that is due but [lastFailed] would
+/// otherwise be retried in a tight loop against a folder that has gone away,
+/// so it waits an hour; anything else waits at least a minute.
+DateTime? nextBackupWake({
+  required BackupCadence cadence,
+  required DateTime? lastRun,
+  required DateTime now,
+  int? atMinute,
+  required bool lastFailed,
+}) {
+  final at = nextBackupAt(
+    cadence: cadence,
+    lastRun: lastRun,
+    now: now,
+    atMinute: atMinute,
+  );
+  if (at == null) return null;
+  final earliest = now.add(
+    lastFailed ? const Duration(hours: 1) : const Duration(minutes: 1),
+  );
+  return at.isBefore(earliest) ? earliest : at;
+}
+
+// ── the stored schedule ──────────────────────────────────────────────────────
+// Read from Prefs on every call, never cached: AppState and the headless paths
+// (an alarm with no UI, the iOS BGProcessingTask) share these keys.
+
+BackupCadence storedBackupCadence() =>
+    BackupCadence.fromName(Prefs.getString(Prefs.backupCadence, ''));
+
+DateTime? storedLastBackupAt() {
+  final ms = Prefs.getInt(Prefs.backupLastRunMs, 0);
+  return ms == 0 ? null : DateTime.fromMillisecondsSinceEpoch(ms);
+}
+
+/// Minutes after local midnight, or null for "no fixed time".
+int? storedBackupTimeMinutes() {
+  final m = Prefs.getInt(Prefs.backupTimeMinutes, -1);
+  return m < 0 || m >= 24 * 60 ? null : m;
+}
+
+String? storedBackupError() {
+  final error = Prefs.getString(Prefs.backupLastError, '');
+  return error.isEmpty ? null : error;
+}
+
+/// The next wake for the stored schedule. See [nextBackupWake].
+DateTime? storedNextBackupWake({DateTime? now}) => nextBackupWake(
+  cadence: ResetGate.active ? BackupCadence.off : storedBackupCadence(),
+  lastRun: storedLastBackupAt(),
+  now: now ?? DateTime.now(),
+  atMinute: storedBackupTimeMinutes(),
+  lastFailed: storedBackupError() != null,
+);
+
+/// A scheduled run with no AppState: the stored settings in, the outcome
+/// back into the same keys AppState shows on the Your data screen.
+Future<BackupOutcome> runStoredBackupIfDue() async {
+  await Prefs.ensureLoaded();
+  if (!Prefs.loaded) return const BackupOutcome(skipped: true);
+  final outcome = await runBackupIfDue(
+    cadence: () => ResetGate.active ? BackupCadence.off : storedBackupCadence(),
+    lastRun: storedLastBackupAt,
+    atMinute: storedBackupTimeMinutes,
+    markRun: (when) async =>
+        Prefs.setInt(Prefs.backupLastRunMs, when.millisecondsSinceEpoch),
+  );
+  if (!outcome.skipped) {
+    Prefs.setString(Prefs.backupLastError, outcome.error ?? '');
+  }
+  return outcome;
+}
+
 /// Extension for a backup written by the CURRENT code. Backups are gzipped:
 /// the database is JSON-heavy and mostly text, so this is roughly a 3x saving
 /// on the one thing here that is kept five times over.

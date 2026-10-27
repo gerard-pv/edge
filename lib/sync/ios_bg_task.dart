@@ -33,6 +33,7 @@ import 'package:shared_preferences/shared_preferences.dart';
 import '../compute/derivation_engine.dart';
 import '../compute/profile.dart';
 import '../ble/ios_ble_restore.dart';
+import '../data/auto_backup.dart' show runStoredBackupIfDue;
 import '../data/local_repository_impl.dart';
 import '../widget/widget_service.dart';
 import 'background_sync.dart';
@@ -85,6 +86,17 @@ class IosBgTask {
           }
         }
         if (!syncOnly) {
+          // A scheduled backup this app could not take while suspended. Before
+          // the heavy derive, which can use up the rest of the budget; a run
+          // iOS cuts short leaves only an unpublished `.partial`.
+          try {
+            final outcome = await runStoredBackupIfDue();
+            if (outcome.error != null) {
+              debugPrint('[ios-bgtask] backup failed: ${outcome.error}');
+            }
+          } catch (e) {
+            debugPrint('[ios-bgtask] backup skipped: $e');
+          }
           // Heavy derive pass (full sleep staging + 24h spectra, stale days).
           try {
             final profile = await _loadProfile();

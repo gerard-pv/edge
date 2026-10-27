@@ -104,6 +104,10 @@ import CoreMotion
     if let registrar = registry.registrar(forPlugin: "AppIconBridge") {
       AppIconBridge.register(messenger: registrar.messenger())
     }
+    // Background time for a scheduled backup. See lib/data/backup_alarm.dart.
+    if let registrar = registry.registrar(forPlugin: "BackupAlarmBridge") {
+      BackupAlarmBridge.register(messenger: registrar.messenger())
+    }
     // Build-time iOS configuration exposed to Dart without requiring --dart-define.
     if let registrar = registry.registrar(forPlugin: "ConfigBridge") {
       ConfigBridge.register(messenger: registrar.messenger())
@@ -132,6 +136,43 @@ import CoreMotion
       // (heavy processing + light sync-only refresh).
       BackgroundTaskManager.schedule()
       BackgroundTaskManager.scheduleRefresh()
+    }
+  }
+}
+
+/// iOS half of `openstrap/backup_alarm`. iOS cannot wake a suspended app at a
+/// time, so there is no alarm here: a scheduled backup starts from a band wake,
+/// a BGProcessingTask or the next open. What iOS can do is keep the app running
+/// while that backup finishes — `acquire` asks for background time (about 30 s)
+/// and `release` hands it back. If iOS ends it first, the half-written
+/// `.partial` file is never published and the next wake retries.
+enum BackupAlarmBridge {
+  private static let channelName = "openstrap/backup_alarm"
+  private static var task: UIBackgroundTaskIdentifier = .invalid
+
+  static func register(messenger: FlutterBinaryMessenger) {
+    let channel = FlutterMethodChannel(name: channelName, binaryMessenger: messenger)
+    channel.setMethodCallHandler { call, result in
+      switch call.method {
+      case "acquire":
+        end()
+        task = UIApplication.shared.beginBackgroundTask(withName: "openstrap.backup") {
+          end()
+        }
+        result(true)
+      case "release":
+        end()
+        result(true)
+      default:
+        result(FlutterMethodNotImplemented)
+      }
+    }
+  }
+
+  private static func end() {
+    if task != .invalid {
+      UIApplication.shared.endBackgroundTask(task)
+      task = .invalid
     }
   }
 }

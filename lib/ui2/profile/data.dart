@@ -404,11 +404,19 @@ class _DataScreenState extends State<DataScreen> {
                     SetRow(LucideIcons.alarmClock, C.purple,
                         l?.dataBackupTime ?? 'Time',
                         sub: l?.dataBackupTimeSub ??
-                            'When the scheduled backup runs. If the phone is off or the app is closed then, it runs the next time the app opens',
+                            'When the scheduled backup runs. Keep OpenStrap running in the background; if it was closed, the backup runs when it next starts',
                         value: backupTime == null
                             ? (l?.dataBackupTimeAny ?? 'Any time')
                             : formatClockOf(_atMinute(backupTime)),
                         onTap: _busy ? null : () => _pickBackupTime(app)),
+                  if (app.backupCadence != BackupCadence.off &&
+                      backupTime != null &&
+                      !app.backupExactAllowed)
+                    SetRow(LucideIcons.triangleAlert, C.orange,
+                        l?.dataBackupExactAlarm ?? 'Allow exact timing',
+                        sub: l?.dataBackupExactAlarmSub ??
+                            'Android may delay the backup by several minutes while the phone is idle. Turn on Alarms & reminders for OpenStrap to run it on time',
+                        onTap: _busy ? null : app.requestExactBackupAlarm),
                   if (app.backupCadence != BackupCadence.off && backupTime != null)
                     SetRow(LucideIcons.undo2, C.n500,
                         l?.dataBackupTimeClear ?? 'Back up at any time',

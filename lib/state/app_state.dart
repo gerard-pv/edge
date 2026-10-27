@@ -66,7 +66,17 @@ import '../stress/breath_phases.dart';
 // `runBackupIfDue` is also the name of the AppState method below, so the pure
 // scheduler is imported under an alias rather than shadowed by it.
 import '../data/auto_backup.dart' as backup
-    show runBackupIfDue, selectedBackupFolder, saveBackupFolder, deleteAutomaticBackups, nextBackupAt;
+    show
+        runBackupIfDue,
+        selectedBackupFolder,
+        saveBackupFolder,
+        deleteAutomaticBackups,
+        storedBackupCadence,
+        storedBackupError,
+        storedBackupTimeMinutes,
+        storedLastBackupAt,
+        storedNextBackupWake;
+import '../data/backup_alarm.dart';
 import 'alarm_schedule.dart';
 import 'derive_coordinator.dart';
 import 'gesture_controller.dart';
@@ -1148,15 +1158,11 @@ class AppState extends ChangeNotifier {
 
   // ── automatic backup ────────────────────────────────────────────────────────
 
-  BackupCadence get backupCadence =>
-      BackupCadence.fromName(Prefs.getString(Prefs.backupCadence, ''));
+  BackupCadence get backupCadence => backup.storedBackupCadence();
 
   BackupFolder? get backupFolder => backup.selectedBackupFolder;
 
-  String? get lastBackupError {
-    final error = Prefs.getString(Prefs.backupLastError, '');
-    return error.isEmpty ? null : error;
-  }
+  String? get lastBackupError => backup.storedBackupError();
 
   Future<void> setBackupFolder(BackupFolder? folder) async {
     await backup.saveBackupFolder(folder);
@@ -1164,17 +1170,11 @@ class AppState extends ChangeNotifier {
     notifyListeners();
   }
 
-  DateTime? get lastBackupAt {
-    final ms = Prefs.getInt(Prefs.backupLastRunMs, 0);
-    return ms == 0 ? null : DateTime.fromMillisecondsSinceEpoch(ms);
-  }
+  DateTime? get lastBackupAt => backup.storedLastBackupAt();
 
   /// Chosen time of day for scheduled backups, in minutes after local
   /// midnight, or null for "whenever the interval has passed".
-  int? get backupTimeMinutes {
-    final m = Prefs.getInt(Prefs.backupTimeMinutes, -1);
-    return m < 0 || m >= 24 * 60 ? null : m;
-  }
+  int? get backupTimeMinutes => backup.storedBackupTimeMinutes();
 
   /// Set or clear the time of day. Does not back up now — choosing a time is
   /// asking for it to happen THEN.
@@ -1184,39 +1184,56 @@ class AppState extends ChangeNotifier {
     _armBackupTimer();
   }
 
-  /// Wakes the app at the next scheduled backup while the process is alive.
-  ///
-  /// On Android the foreground service keeps the process (and this timer)
-  /// running, so a chosen time is honoured with the app closed. On iOS the
-  /// timer only runs while the app is not suspended; the foreground hook
-  /// catches up on the next open. Either way [runBackupIfDue] decides —
-  /// the timer is only a wake-up.
+  /// Whether Android will fire the backup alarm on the minute. False means it
+  /// may run some minutes late in Doze; the data screen offers the setting.
+  bool backupExactAllowed = true;
+
+  /// Open Android's "Alarms & reminders" page for this app.
+  Future<void> requestExactBackupAlarm() => BackupAlarm.requestExact();
+
+  /// Three wake-ups for the next scheduled backup; [runBackupIfDue] decides
+  /// at each of them whether one is actually due.
+  ///   • The Android alarm (BackupAlarm) — the one that keeps the time while
+  ///     the phone sleeps.
+  ///   • This timer, while the process runs. Capped at a few hours so a
+  ///     timezone change cannot leave it pointing at a stale instant.
+  ///   • [_backupDueAt], checked on every record from the band — on iOS the
+  ///     only thing that runs Dart in the background, as long as the band is
+  ///     connected.
   Timer? _backupTimer;
+  DateTime? _backupDueAt;
 
   void _armBackupTimer() {
     _backupTimer?.cancel();
     _backupTimer = null;
+    _backupDueAt = null;
     if (_disposed) return;
     final now = DateTime.now();
-    final at = backup.nextBackupAt(
-      cadence: backupCadence,
-      lastRun: lastBackupAt,
-      now: now,
-      atMinute: backupTimeMinutes,
-    );
+    final at = backup.storedNextBackupWake(now: now);
+    unawaited(BackupAlarm.schedule(at));
+    unawaited(_refreshBackupExact());
     if (at == null) return;
+    _backupDueAt = at;
     var delay = at.difference(now);
-    // A failed backup is still due; without a floor it would retry in a tight
-    // loop against a folder that has gone away.
-    final floor = lastBackupError == null
-        ? const Duration(minutes: 1)
-        : const Duration(hours: 1);
-    if (delay < floor) delay = floor;
-    // Re-evaluate at least every few hours, so a timezone change or a device
-    // that slept through the deadline does not leave the timer pointing at a
-    // stale instant.
     if (delay > const Duration(hours: 3)) delay = const Duration(hours: 3);
     _backupTimer = Timer(delay, () => unawaited(runBackupIfDue()));
+  }
+
+  Future<void> _refreshBackupExact() async {
+    final allowed = await BackupAlarm.canScheduleExact();
+    if (_disposed || allowed == backupExactAllowed) return;
+    backupExactAllowed = allowed;
+    notifyListeners();
+  }
+
+  /// Called for every stored record: cheap until the due time has passed.
+  void _maybeBackupOnRecord() {
+    final due = _backupDueAt;
+    if (due == null || DateTime.now().isBefore(due)) return;
+    // Cleared now so the next records do not queue more runs; the run
+    // re-arms it when it finishes.
+    _backupDueAt = null;
+    unawaited(runBackupIfDue());
   }
 
   /// Change the cadence. Switching it ON takes a backup immediately rather
@@ -1267,7 +1284,7 @@ class AppState extends ChangeNotifier {
     // `markRun` notifies listeners — which throws if the state was disposed
     // during a long export, surfacing as an unhandled async error.
     try {
-      await _runBackupIfDue();
+      await BackupAlarm.holdAwake(_runBackupIfDue);
     } catch (e) {
       _log('Backup failed: $e');
     } finally {
@@ -1580,6 +1597,9 @@ class AppState extends ChangeNotifier {
                        lifecycle == AppLifecycleState.paused || 
                        lifecycle == AppLifecycleState.hidden;
     _background = isHeadless;
+    // A backup alarm that fires while this object exists runs through it, so
+    // the Your data screen sees the outcome.
+    BackupAlarm.onFire = runBackupIfDue;
 
     _gestureController = GestureController(
       settings: gestureSettings,
@@ -1845,6 +1865,7 @@ class AppState extends ChangeNotifier {
     _alarmGraceTimer = null;
     _backupTimer?.cancel();
     _backupTimer = null;
+    if (BackupAlarm.onFire == runBackupIfDue) BackupAlarm.onFire = null;
     _breathingController.dispose();
     _workoutController.dispose();
     // The sensor's notifier OUTLIVES this object (HrsLink is a singleton), so
@@ -3180,6 +3201,7 @@ class AppState extends ChangeNotifier {
     if (inserted && ts != null && ts > 0 && ts > (_lastRecTs ?? 0)) {
       _lastRecTs = ts;
     }
+    _maybeBackupOnRecord();
   }
 
   // Ephemeral live high-rate frame (0x28/0x2B/0x33) — NOT persisted. The
