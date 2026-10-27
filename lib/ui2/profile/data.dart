@@ -272,6 +272,16 @@ class _DataScreenState extends State<DataScreen> {
     return (l?.dataBackupFolderSaved ?? 'Backup folder saved.', false);
   }
 
+  Future<void> _pickBackupTime(AppState app) async {
+    final current = app.backupTimeMinutes ?? 3 * 60;
+    final picked = await showTimePicker(
+      context: context,
+      initialTime: TimeOfDay(hour: current ~/ 60, minute: current % 60),
+    );
+    if (picked == null || !mounted) return;
+    app.setBackupTime(picked.hour * 60 + picked.minute);
+  }
+
   Future<_Note> _useDefaultBackupFolder(AppState app) async {
     final l = AppLocalizations.of(context);
     await app.setBackupFolder(null);
@@ -311,6 +321,7 @@ class _DataScreenState extends State<DataScreen> {
     final last = app.lastBackupAt;
     final folder = app.backupFolder;
     final backupError = app.lastBackupError;
+    final backupTime = app.backupTimeMinutes;
     final folderLabel = folder == null
         ? (l?.dataBackupFolderDefault ?? 'App folder (default)')
         : folder.name.isEmpty
@@ -389,6 +400,19 @@ class _DataScreenState extends State<DataScreen> {
                               await app.setBackupCadence(_nextCadence(app.backupCadence));
                               return ('', false);
                             })),
+                  if (app.backupCadence != BackupCadence.off)
+                    SetRow(LucideIcons.alarmClock, C.purple,
+                        l?.dataBackupTime ?? 'Time',
+                        sub: l?.dataBackupTimeSub ??
+                            'When the scheduled backup runs. If the phone is off or the app is closed then, it runs the next time the app opens',
+                        value: backupTime == null
+                            ? (l?.dataBackupTimeAny ?? 'Any time')
+                            : formatClockOf(_atMinute(backupTime)),
+                        onTap: _busy ? null : () => _pickBackupTime(app)),
+                  if (app.backupCadence != BackupCadence.off && backupTime != null)
+                    SetRow(LucideIcons.undo2, C.n500,
+                        l?.dataBackupTimeClear ?? 'Back up at any time',
+                        onTap: _busy ? null : () => app.setBackupTime(null)),
                   if (defaultTargetPlatform == TargetPlatform.android)
                     SetRow(LucideIcons.folder, C.purple,
                         l?.dataBackupFolder ?? 'Backup folder',
@@ -498,6 +522,12 @@ class _DataScreenState extends State<DataScreen> {
 /// options is a sheet nobody needs.
 BackupCadence _nextCadence(BackupCadence c) => BackupCadence
     .values[(c.index + 1) % BackupCadence.values.length];
+
+/// Today at [minutes] after midnight; only its clock fields are shown.
+DateTime _atMinute(int minutes) {
+  final now = DateTime.now();
+  return DateTime(now.year, now.month, now.day, minutes ~/ 60, minutes % 60);
+}
 
 String _stamp(DateTime t) {
   String two(int v) => v.toString().padLeft(2, '0');

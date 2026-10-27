@@ -66,7 +66,7 @@ import '../stress/breath_phases.dart';
 // `runBackupIfDue` is also the name of the AppState method below, so the pure
 // scheduler is imported under an alias rather than shadowed by it.
 import '../data/auto_backup.dart' as backup
-    show runBackupIfDue, selectedBackupFolder, saveBackupFolder, deleteAutomaticBackups;
+    show runBackupIfDue, selectedBackupFolder, saveBackupFolder, deleteAutomaticBackups, nextBackupAt;
 import 'alarm_schedule.dart';
 import 'derive_coordinator.dart';
 import 'gesture_controller.dart';
@@ -1169,6 +1169,56 @@ class AppState extends ChangeNotifier {
     return ms == 0 ? null : DateTime.fromMillisecondsSinceEpoch(ms);
   }
 
+  /// Chosen time of day for scheduled backups, in minutes after local
+  /// midnight, or null for "whenever the interval has passed".
+  int? get backupTimeMinutes {
+    final m = Prefs.getInt(Prefs.backupTimeMinutes, -1);
+    return m < 0 || m >= 24 * 60 ? null : m;
+  }
+
+  /// Set or clear the time of day. Does not back up now — choosing a time is
+  /// asking for it to happen THEN.
+  void setBackupTime(int? minutes) {
+    Prefs.setInt(Prefs.backupTimeMinutes, minutes ?? -1);
+    notifyListeners();
+    _armBackupTimer();
+  }
+
+  /// Wakes the app at the next scheduled backup while the process is alive.
+  ///
+  /// On Android the foreground service keeps the process (and this timer)
+  /// running, so a chosen time is honoured with the app closed. On iOS the
+  /// timer only runs while the app is not suspended; the foreground hook
+  /// catches up on the next open. Either way [runBackupIfDue] decides —
+  /// the timer is only a wake-up.
+  Timer? _backupTimer;
+
+  void _armBackupTimer() {
+    _backupTimer?.cancel();
+    _backupTimer = null;
+    if (_disposed) return;
+    final now = DateTime.now();
+    final at = backup.nextBackupAt(
+      cadence: backupCadence,
+      lastRun: lastBackupAt,
+      now: now,
+      atMinute: backupTimeMinutes,
+    );
+    if (at == null) return;
+    var delay = at.difference(now);
+    // A failed backup is still due; without a floor it would retry in a tight
+    // loop against a folder that has gone away.
+    final floor = lastBackupError == null
+        ? const Duration(minutes: 1)
+        : const Duration(hours: 1);
+    if (delay < floor) delay = floor;
+    // Re-evaluate at least every few hours, so a timezone change or a device
+    // that slept through the deadline does not leave the timer pointing at a
+    // stale instant.
+    if (delay > const Duration(hours: 3)) delay = const Duration(hours: 3);
+    _backupTimer = Timer(delay, () => unawaited(runBackupIfDue()));
+  }
+
   /// Change the cadence. Switching it ON takes a backup immediately rather
   /// than waiting for the interval — otherwise nothing visible happens and the
   /// setting looks broken.
@@ -1176,6 +1226,7 @@ class AppState extends ChangeNotifier {
     Prefs.setString(Prefs.backupCadence, cadence.name);
     notifyListeners();
     if (cadence != BackupCadence.off) await runBackupNow();
+    _armBackupTimer();
   }
 
   void _markBackupRun(DateTime when) {
@@ -1191,6 +1242,7 @@ class AppState extends ChangeNotifier {
     final outcome = await runBackup();
     _recordBackupOutcome(outcome);
     if (outcome.succeeded) _markBackupRun(DateTime.now());
+    _armBackupTimer();
     return outcome;
   }
 
@@ -1207,7 +1259,10 @@ class AppState extends ChangeNotifier {
   /// resume decide against a stale timestamp while the first backup was still
   /// finishing, and start a duplicate export.
   Future<void> runBackupIfDue() async {
-    if (backupCadence == BackupCadence.off) return;
+    if (backupCadence == BackupCadence.off) {
+      _armBackupTimer();
+      return;
+    }
     // Guarded: this is fired with `unawaited` from the resume hook, and
     // `markRun` notifies listeners — which throws if the state was disposed
     // during a long export, surfacing as an unhandled async error.
@@ -1215,6 +1270,8 @@ class AppState extends ChangeNotifier {
       await _runBackupIfDue();
     } catch (e) {
       _log('Backup failed: $e');
+    } finally {
+      _armBackupTimer();
     }
   }
 
@@ -1226,6 +1283,7 @@ class AppState extends ChangeNotifier {
       // still get a copy of their health data written after disabling it.
       cadence: () => ResetGate.active ? BackupCadence.off : backupCadence,
       lastRun: () => lastBackupAt,
+      atMinute: () => backupTimeMinutes,
       markRun: (when) async => _markBackupRun(when),
     );
     _recordBackupOutcome(outcome);
@@ -1785,6 +1843,8 @@ class AppState extends ChangeNotifier {
     _sync.dispose();
     _alarmGraceTimer?.cancel();
     _alarmGraceTimer = null;
+    _backupTimer?.cancel();
+    _backupTimer = null;
     _breathingController.dispose();
     _workoutController.dispose();
     // The sensor's notifier OUTLIVES this object (HrsLink is a singleton), so
@@ -1821,6 +1881,7 @@ class AppState extends ChangeNotifier {
   void debugArmOwnedTimers() {
     _sync.debugArmBackfillTimer();
     _alarmGraceTimer ??= Timer(const Duration(minutes: 5), () {});
+    _backupTimer ??= Timer(const Duration(minutes: 5), () {});
     _breathingController.debugArmTimer();
     _workoutController.debugArmTimer();
   }
@@ -2712,6 +2773,9 @@ class AppState extends ChangeNotifier {
     unawaited(_initCompanion());
     // arm the water-reminder strap buzz (timers don't persist)
     unawaited(armWaterReminder());
+    // Same for the scheduled backup: catch up if one is due, then arm the
+    // timer for the next one.
+    unawaited(runBackupIfDue());
     // App status (OTA pointer + admin alert banner) — best-effort, non-blocking.
     unawaited(_loadAppStatus());
     // Register the recurring wall-clock nudges as real OS-scheduled notifications

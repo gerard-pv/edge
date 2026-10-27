@@ -90,6 +90,10 @@ class Prefs {
   static const String backupFolder = 'backup.folder';
   static const String backupLastError = 'backup.last_error';
 
+  /// Time of day for scheduled backups, in minutes after local midnight.
+  /// Absent or -1: no fixed time, back up whenever the interval has passed.
+  static const String backupTimeMinutes = 'backup.time_minutes';
+
   /// Developer mode. Off unless somebody deliberately turned it on — it is a
   /// tool for us, not a feature, so it has no switch in the normal settings
   /// list and nothing reads it except the surfaces it reveals.

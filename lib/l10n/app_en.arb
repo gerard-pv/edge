@@ -14362,6 +14362,22 @@
   "dataBackupFolderUseDefault": "Use default folder",
   "dataBackupFolderSaved": "Backup folder saved.",
   "dataBackupFolderRetry": "Retry with Back up now, or choose another folder",
+  "dataBackupTime": "Time",
+  "@dataBackupTime": {
+    "description": "Automatic backup: row title for the time of day backups run."
+  },
+  "dataBackupTimeSub": "When the scheduled backup runs. If the phone is off or the app is closed then, it runs the next time the app opens",
+  "@dataBackupTimeSub": {
+    "description": "Automatic backup: row sub for the time of day setting."
+  },
+  "dataBackupTimeAny": "Any time",
+  "@dataBackupTimeAny": {
+    "description": "Automatic backup: row value when no time of day is chosen."
+  },
+  "dataBackupTimeClear": "Back up at any time",
+  "@dataBackupTimeClear": {
+    "description": "Automatic backup: row that clears the chosen time of day."
+  },
   "@dataBackupFolder": {
     "description": "Android automatic backup folder setting."
   },

@@ -115,6 +115,160 @@ void main() {
     });
   });
 
+  group('backupIsDue at a time of day', () {
+    const at3am = 3 * 60;
+
+    test('daily waits for the chosen time, not 24 h from the last run', () {
+      // Last run yesterday at 10:00 (the app was opened late). Opening at
+      // 02:59 today is too early; 03:00 is due even though under 24 h passed.
+      final last = DateTime(2026, 8, 8, 10);
+      expect(
+        backupIsDue(
+          cadence: BackupCadence.daily,
+          lastRun: last,
+          now: DateTime(2026, 8, 9, 2, 59),
+          atMinute: at3am,
+        ),
+        isFalse,
+      );
+      expect(
+        backupIsDue(
+          cadence: BackupCadence.daily,
+          lastRun: last,
+          now: DateTime(2026, 8, 9, 3),
+          atMinute: at3am,
+        ),
+        isTrue,
+      );
+    });
+
+    test('daily: opening after the time catches up once, then waits', () {
+      final last = DateTime(2026, 8, 8, 3);
+      expect(
+        backupIsDue(
+          cadence: BackupCadence.daily,
+          lastRun: last,
+          now: DateTime(2026, 8, 9, 14),
+          atMinute: at3am,
+        ),
+        isTrue,
+      );
+      expect(
+        backupIsDue(
+          cadence: BackupCadence.daily,
+          lastRun: DateTime(2026, 8, 9, 14),
+          now: DateTime(2026, 8, 9, 23),
+          atMinute: at3am,
+        ),
+        isFalse,
+        reason: 'the catch-up run covers today',
+      );
+    });
+
+    test('daily: a manual backup in the evening does not cancel 03:00', () {
+      expect(
+        backupIsDue(
+          cadence: BackupCadence.daily,
+          lastRun: DateTime(2026, 8, 8, 20),
+          now: DateTime(2026, 8, 9, 3),
+          atMinute: at3am,
+        ),
+        isTrue,
+      );
+    });
+
+    test('weekly stays on its weekday', () {
+      final last = DateTime(2026, 8, 3, 3); // a Monday, on schedule
+      expect(
+        backupIsDue(
+          cadence: BackupCadence.weekly,
+          lastRun: last,
+          now: DateTime(2026, 8, 9, 3), // Sunday
+          atMinute: at3am,
+        ),
+        isFalse,
+      );
+      expect(
+        backupIsDue(
+          cadence: BackupCadence.weekly,
+          lastRun: last,
+          now: DateTime(2026, 8, 10, 3), // next Monday
+          atMinute: at3am,
+        ),
+        isTrue,
+      );
+    });
+
+    test('never backed up is still due straight away', () {
+      expect(
+        backupIsDue(
+          cadence: BackupCadence.daily,
+          lastRun: null,
+          now: DateTime(2026, 8, 9, 1),
+          atMinute: at3am,
+        ),
+        isTrue,
+      );
+    });
+  });
+
+  group('nextBackupAt', () {
+    test('off has no next backup', () {
+      expect(
+        nextBackupAt(
+          cadence: BackupCadence.off,
+          lastRun: null,
+          now: DateTime(2026, 8, 9),
+          atMinute: 180,
+        ),
+        isNull,
+      );
+    });
+
+    test('due now returns now', () {
+      final now = DateTime(2026, 8, 9, 12);
+      expect(
+        nextBackupAt(cadence: BackupCadence.daily, lastRun: null, now: now),
+        now,
+      );
+    });
+
+    test('without a time it is the last run plus the interval', () {
+      expect(
+        nextBackupAt(
+          cadence: BackupCadence.daily,
+          lastRun: DateTime(2026, 8, 9, 10),
+          now: DateTime(2026, 8, 9, 12),
+        ),
+        DateTime(2026, 8, 10, 10),
+      );
+    });
+
+    test('daily with a time is the next occurrence of it', () {
+      expect(
+        nextBackupAt(
+          cadence: BackupCadence.daily,
+          lastRun: DateTime(2026, 8, 9, 3),
+          now: DateTime(2026, 8, 9, 12),
+          atMinute: 180,
+        ),
+        DateTime(2026, 8, 10, 3),
+      );
+    });
+
+    test('weekly with a time skips to the same weekday', () {
+      expect(
+        nextBackupAt(
+          cadence: BackupCadence.weekly,
+          lastRun: DateTime(2026, 8, 3, 3),
+          now: DateTime(2026, 8, 4, 12),
+          atMinute: 180,
+        ),
+        DateTime(2026, 8, 10, 3),
+      );
+    });
+  });
+
   group('BackupCadence', () {
     test('an unknown stored name falls back to off, not to backing up', () {
       // A pref written by a newer build must not silently start writing

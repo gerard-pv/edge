@@ -9,11 +9,12 @@
 // Without one, keep the original app-specific folder. iOS keeps its Documents
 // folder. Lost access is a reported failure, never a silent switch of location.
 //
-// WHEN IT RUNS. On foreground, when due. There is no background scheduler that
-// works on both platforms — Workmanager is Android-only here and iOS's
-// BGProcessingTask is best-effort — and a backup that fires when you open the
-// app is honest about that. The alternative is a schedule that claims "daily"
-// and delivers whenever the OS feels like it.
+// WHEN IT RUNS. On foreground, when due, and — if the user picked a time of
+// day — from a timer in AppState at that time while the process is alive.
+// There is no OS background scheduler that works on both platforms —
+// Workmanager is Android-only here and iOS's BGProcessingTask is best-effort.
+// On Android the foreground service keeps the process alive, so the chosen
+// time holds; on iOS a suspended app catches up on the next open.
 
 import 'dart:convert';
 import 'dart:io';
@@ -116,10 +117,17 @@ const kBackupsKept = 5;
 /// one has never been taken, which is always due — otherwise switching the
 /// setting on would do nothing visible until tomorrow, and the user would
 /// reasonably conclude it was broken.
+///
+/// [atMinute] is the chosen time of day, in minutes after local midnight, or
+/// null for "whenever the app is next open after the interval". With a time,
+/// the backup is due once the latest occurrence of that time has passed AND
+/// that occurrence is far enough from the last run — so opening the app at
+/// 09:00 does not take tonight's 03:00 backup early.
 bool backupIsDue({
   required BackupCadence cadence,
   required DateTime? lastRun,
   required DateTime now,
+  int? atMinute,
 }) {
   final interval = cadence.interval;
   if (interval == null) return false;
@@ -127,7 +135,61 @@ bool backupIsDue({
   // A clock that moved backwards (timezone change, NTP correction, a user
   // setting the date) must not park the schedule in the future forever.
   if (lastRun.isAfter(now)) return true;
-  return now.difference(lastRun) >= interval;
+  if (atMinute == null) return now.difference(lastRun) >= interval;
+  // Each run belongs to the slot at or before it. Due once the current slot
+  // is a whole interval of calendar days past the last run's slot: a run that
+  // landed off-slot (Back up now, a late open) still counts for its own slot,
+  // so a manual backup at 20:00 does not cancel tomorrow's 03:00, and weekly
+  // stays on its weekday. Counting calendar days keeps DST out of it.
+  final slot = latestBackupSlot(now, atMinute);
+  final lastSlot = latestBackupSlot(lastRun, atMinute);
+  return _calendarDaysBetween(lastSlot, slot) >= interval.inDays;
+}
+
+int _calendarDaysBetween(DateTime a, DateTime b) => DateTime.utc(
+  b.year,
+  b.month,
+  b.day,
+).difference(DateTime.utc(a.year, a.month, a.day)).inDays;
+
+/// The most recent occurrence of [atMinute] (minutes after local midnight) at
+/// or before [now]. Built from calendar fields rather than by subtracting 24 h,
+/// so a DST change does not shift the time by an hour.
+DateTime latestBackupSlot(DateTime now, int atMinute) {
+  final today = _slotOn(now.year, now.month, now.day, atMinute);
+  if (!today.isAfter(now)) return today;
+  return _slotOn(now.year, now.month, now.day - 1, atMinute);
+}
+
+DateTime _slotOn(int y, int m, int d, int atMinute) =>
+    DateTime(y, m, d, atMinute ~/ 60, atMinute % 60);
+
+/// When the next scheduled backup becomes due, or null when there is none.
+///
+/// Only a wake-up hint for a timer: [backupIsDue] still makes the decision
+/// when it fires. Returns [now] when a backup is already due.
+DateTime? nextBackupAt({
+  required BackupCadence cadence,
+  required DateTime? lastRun,
+  required DateTime now,
+  int? atMinute,
+}) {
+  final interval = cadence.interval;
+  if (interval == null) return null;
+  bool dueAt(DateTime t) => backupIsDue(
+    cadence: cadence,
+    lastRun: lastRun,
+    now: t,
+    atMinute: atMinute,
+  );
+  if (dueAt(now)) return now;
+  if (atMinute == null) return lastRun!.add(interval);
+  // Walk forward slot by slot; the weekly window is at most eight slots away.
+  for (var i = 0; i <= interval.inDays + 1; i++) {
+    final slot = _slotOn(now.year, now.month, now.day + i, atMinute);
+    if (slot.isAfter(now) && dueAt(slot)) return slot;
+  }
+  return null;
 }
 
 /// Extension for a backup written by the CURRENT code. Backups are gzipped:
@@ -481,7 +543,7 @@ Future<void> deleteAutomaticBackups() => _serialize(() async {
 
 /// Run a backup if [cadence] says one is due.
 ///
-/// [cadence], [lastRun] and [markRun] are all CALLBACKS rather than values, so
+/// [cadence], [lastRun], [atMinute] and [markRun] are all CALLBACKS rather than values, so
 /// reading the setting and the timestamp, deciding, exporting and persisting
 /// happen inside the same lock. Passing either in as a value would reintroduce
 /// exactly the race this serialization exists to close: the caller would have
@@ -495,6 +557,7 @@ Future<BackupOutcome> runBackupIfDue({
   required BackupCadence Function() cadence,
   required DateTime? Function() lastRun,
   required Future<void> Function(DateTime) markRun,
+  int? Function()? atMinute,
   DateTime? now,
   Future<String> Function()? exportSnapshot,
   BackupStorage? storage,
@@ -505,7 +568,12 @@ Future<BackupOutcome> runBackupIfDue({
   // when it queued. Someone who switches backup OFF while one is running would
   // still get another unencrypted copy of their health data written after
   // they disabled it.
-  if (!backupIsDue(cadence: cadence(), lastRun: lastRun(), now: when)) {
+  if (!backupIsDue(
+    cadence: cadence(),
+    lastRun: lastRun(),
+    now: when,
+    atMinute: atMinute?.call(),
+  )) {
     return const BackupOutcome(skipped: true);
   }
   final outcome = await _runBackup(
